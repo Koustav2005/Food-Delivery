@@ -56,6 +56,19 @@ export default function AuthPage() {
 
   const role = useMemo(() => ROLES.find((r) => r.id === roleId), [roleId])
 
+  const particles = useMemo(
+    () =>
+      Array.from({ length: 18 }, (_, id) => ({
+        id,
+        size: 3 + Math.round(Math.random() * 5),
+        x: Math.round(Math.random() * 100),
+        dur: 10 + Math.round(Math.random() * 10),
+        delay: -Math.round(Math.random() * 18),
+        drift: Math.round((Math.random() - 0.5) * 60),
+      })),
+    [],
+  )
+
   useEffect(() => () => clearTimeout(timeoutRef.current), [])
 
   const setField = (field, value) => {
@@ -122,7 +135,23 @@ export default function AuthPage() {
   return (
     <div className="auth-page" data-role={roleId}>
       <div className="auth-hero">
-        <div className="hero-blobs" aria-hidden="true" />
+        <div className="hero-blobs" aria-hidden="true">
+          <span />
+        </div>
+        <div className="hero-particles" aria-hidden="true">
+          {particles.map((p) => (
+            <span
+              key={p.id}
+              style={{
+                '--size': `${p.size}px`,
+                '--x': `${p.x}%`,
+                '--dur': `${p.dur}s`,
+                '--delay': `${p.delay}s`,
+                '--drift': `${p.drift}px`,
+              }}
+            />
+          ))}
+        </div>
         <div className="floating-emoji" aria-hidden="true">
           {role.emoji.map((e, i) => (
             <span key={e} style={{ '--i': i }}>
