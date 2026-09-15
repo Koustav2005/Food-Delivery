@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { supabase } from '../../utils/supabase'
 import { ROLES, VEHICLE_TYPES } from './roles'
 import {
   IconMail,
@@ -18,6 +19,42 @@ import './AuthPage.css'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const PHONE_RE = /^[6-9]\d{9}$/
+const PENDING_OAUTH_ROLE_KEY = 'tiffin-pending-oauth-role'
+
+function oauthName(user) {
+  return user.user_metadata?.full_name || user.user_metadata?.name || ''
+}
+
+function writeCustomerRow(user) {
+  return supabase.from('customers').upsert({
+    id: user.id,
+    full_name: oauthName(user),
+    email: user.email,
+    phone: user.phone || null,
+  })
+}
+
+async function writeRestaurantRow(user, restaurantName) {
+  await supabase.from('customers').delete().eq('id', user.id)
+  return supabase.from('restaurant_partners').upsert({
+    id: user.id,
+    full_name: oauthName(user),
+    email: user.email,
+    phone: user.phone || null,
+    restaurant_name: restaurantName,
+  })
+}
+
+async function writeDriverRow(user, vehicleType) {
+  await supabase.from('customers').delete().eq('id', user.id)
+  return supabase.from('drivers').upsert({
+    id: user.id,
+    full_name: oauthName(user),
+    email: user.email,
+    phone: user.phone || null,
+    vehicle_type: vehicleType,
+  })
+}
 
 const EMPTY_FORM = {
   fullName: '',
@@ -52,7 +89,13 @@ export default function AuthPage() {
   const [showConfirm, setShowConfirm] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [success, setSuccess] = useState(false)
-  const timeoutRef = useRef(null)
+  const [authError, setAuthError] = useState('')
+  const [oauthPending, setOauthPending] = useState(null)
+  const [oauthDetail, setOauthDetail] = useState('')
+  const [oauthDetailError, setOauthDetailError] = useState('')
+
+  const oauthIsRestaurant = oauthPending?.role === 'restaurant'
+  const oauthUserEmail = oauthPending?.user?.email ?? ''
 
   const role = useMemo(() => ROLES.find((r) => r.id === roleId), [roleId])
 
@@ -69,7 +112,45 @@ export default function AuthPage() {
     [],
   )
 
-  useEffect(() => () => clearTimeout(timeoutRef.current), [])
+  useEffect(() => {
+    const resumeOAuth = async () => {
+      const pendingRole = localStorage.getItem(PENDING_OAUTH_ROLE_KEY)
+      if (!pendingRole) return
+
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+      if (!session) return
+
+      localStorage.removeItem(PENDING_OAUTH_ROLE_KEY)
+
+      if (pendingRole === 'restaurant' || pendingRole === 'driver') {
+        const table = pendingRole === 'restaurant' ? 'restaurant_partners' : 'drivers'
+        const { data: existingRow } = await supabase
+          .from(table)
+          .select('id')
+          .eq('id', session.user.id)
+          .maybeSingle()
+
+        setRoleId(pendingRole)
+
+        if (existingRow) {
+          setSuccess(true)
+          return
+        }
+
+        setOauthPending({ role: pendingRole, user: session.user })
+        return
+      }
+
+      setRoleId('customer')
+      const { error } = await writeCustomerRow(session.user)
+      if (error) setAuthError(error.message)
+      setSuccess(true)
+    }
+
+    resumeOAuth()
+  }, [])
 
   const setField = (field, value) => {
     setForm((prev) => ({ ...prev, [field]: value }))
@@ -117,17 +198,96 @@ export default function AuthPage() {
     return next
   }
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault()
     const validationErrors = validate()
     setErrors(validationErrors)
+    setAuthError('')
     if (Object.keys(validationErrors).length > 0) return
 
     setSubmitting(true)
-    timeoutRef.current = setTimeout(() => {
+
+    if (mode === 'login') {
+      const { error } =
+        identifierType === 'email'
+          ? await supabase.auth.signInWithPassword({
+              email: form.identifier,
+              password: form.password,
+            })
+          : await supabase.auth.signInWithPassword({
+              phone: form.identifier,
+              password: form.password,
+            })
+
       setSubmitting(false)
+      if (error) {
+        setAuthError(error.message)
+        return
+      }
       setSuccess(true)
-    }, 1100)
+      return
+    }
+
+    const { error } = await supabase.auth.signUp({
+      email: form.email,
+      password: form.password,
+      options: {
+        data: {
+          full_name: form.fullName,
+          phone: form.phone,
+          role: roleId,
+          ...(roleId === 'restaurant' && { restaurant_name: form.roleField }),
+          ...(roleId === 'driver' && { vehicle_type: form.roleField }),
+        },
+      },
+    })
+
+    setSubmitting(false)
+    if (error) {
+      setAuthError(error.message)
+      return
+    }
+    setSuccess(true)
+  }
+
+  const handleOAuth = async (provider) => {
+    setAuthError('')
+    localStorage.setItem(PENDING_OAUTH_ROLE_KEY, roleId)
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider,
+      options: { redirectTo: window.location.origin },
+    })
+    if (error) {
+      localStorage.removeItem(PENDING_OAUTH_ROLE_KEY)
+      setAuthError(error.message)
+    }
+  }
+
+  const handleCompleteOAuthProfile = async (event) => {
+    event.preventDefault()
+    if (!oauthPending) return
+
+    if (!oauthDetail.trim()) {
+      setOauthDetailError(oauthIsRestaurant ? 'Enter your restaurant name' : 'Select your vehicle type')
+      return
+    }
+
+    setOauthDetailError('')
+    setAuthError('')
+    setSubmitting(true)
+
+    const { error } = oauthIsRestaurant
+      ? await writeRestaurantRow(oauthPending.user, oauthDetail)
+      : await writeDriverRow(oauthPending.user, oauthDetail)
+
+    setSubmitting(false)
+    if (error) {
+      setAuthError(error.message)
+      return
+    }
+    setOauthPending(null)
+    setOauthDetail('')
+    setSuccess(true)
   }
 
   const strength = passwordStrength(form.password)
@@ -197,25 +357,89 @@ export default function AuthPage() {
             <span>Tiffin</span>
           </div>
 
-          <div className="role-tabs" role="tablist" aria-label="Continue as">
-            {ROLES.map((r) => (
-              <button
-                key={r.id}
-                type="button"
-                role="tab"
-                aria-selected={roleId === r.id}
-                className={roleId === r.id ? 'active' : ''}
-                onClick={() => switchRole(r.id)}
-              >
-                {r.id === 'customer' && <IconUser />}
-                {r.id === 'restaurant' && <IconStore />}
-                {r.id === 'driver' && <IconBike />}
-                {r.label}
-              </button>
-            ))}
-          </div>
+          {!oauthPending && (
+            <div className="role-tabs" role="tablist" aria-label="Continue as">
+              {ROLES.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={roleId === r.id}
+                  className={roleId === r.id ? 'active' : ''}
+                  onClick={() => switchRole(r.id)}
+                >
+                  {r.id === 'customer' && <IconUser />}
+                  {r.id === 'restaurant' && <IconStore />}
+                  {r.id === 'driver' && <IconBike />}
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          )}
 
-          {success ? (
+          {oauthPending ? (
+            <>
+              <h2>Almost done!</h2>
+              <p>
+                Signed in as {oauthUserEmail}.{' '}
+                {oauthIsRestaurant
+                  ? "What's your restaurant called?"
+                  : 'What vehicle will you deliver with?'}
+              </p>
+              <form className="auth-form" onSubmit={handleCompleteOAuthProfile} noValidate>
+                {oauthIsRestaurant ? (
+                  <div className="field">
+                    <label htmlFor="oauthDetail">Restaurant name</label>
+                    <div className={`input-wrap ${oauthDetailError ? 'invalid' : ''}`}>
+                      <IconStore className="input-icon" />
+                      <input
+                        id="oauthDetail"
+                        type="text"
+                        placeholder="Spice Route Kitchen"
+                        value={oauthDetail}
+                        onChange={(e) => {
+                          setOauthDetail(e.target.value)
+                          setOauthDetailError('')
+                        }}
+                      />
+                    </div>
+                    {oauthDetailError && <span className="error-text">{oauthDetailError}</span>}
+                  </div>
+                ) : (
+                  <div className="field">
+                    <label htmlFor="oauthDetail">Vehicle type</label>
+                    <div className={`input-wrap select-wrap ${oauthDetailError ? 'invalid' : ''}`}>
+                      <IconBike className="input-icon" />
+                      <select
+                        id="oauthDetail"
+                        value={oauthDetail}
+                        onChange={(e) => {
+                          setOauthDetail(e.target.value)
+                          setOauthDetailError('')
+                        }}
+                      >
+                        <option value="" disabled>
+                          Select a vehicle
+                        </option>
+                        {VEHICLE_TYPES.map((v) => (
+                          <option key={v} value={v}>
+                            {v}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {oauthDetailError && <span className="error-text">{oauthDetailError}</span>}
+                  </div>
+                )}
+
+                {authError && <p className="error-text auth-error">{authError}</p>}
+
+                <button type="submit" className="submit-btn" disabled={submitting} aria-busy={submitting}>
+                  {submitting ? <span className="spinner" aria-hidden="true" /> : 'Finish setup'}
+                </button>
+              </form>
+            </>
+          ) : success ? (
             <div className="success-state">
               <div className="success-icon">
                 <IconCheck />
@@ -224,7 +448,7 @@ export default function AuthPage() {
               <p>
                 {mode === 'login'
                   ? `You're logged in as a ${role.label.toLowerCase()}.`
-                  : "We've sent a verification link — this is a demo, no backend is wired up yet."}
+                  : "We've sent a verification link to your email — confirm it to activate your account."}
               </p>
               <button
                 type="button"
@@ -491,6 +715,8 @@ export default function AuthPage() {
                   </div>
                 )}
 
+                {authError && <p className="error-text auth-error">{authError}</p>}
+
                 <button type="submit" className="submit-btn" disabled={submitting} aria-busy={submitting}>
                   {submitting ? (
                     <span className="spinner" aria-hidden="true" />
@@ -507,10 +733,10 @@ export default function AuthPage() {
               </div>
 
               <div className="social-row">
-                <button type="button">
+                <button type="button" onClick={() => handleOAuth('google')}>
                   <IconGoogle /> Google
                 </button>
-                <button type="button">
+                <button type="button" onClick={() => handleOAuth('facebook')}>
                   <IconFacebook /> Facebook
                 </button>
               </div>
