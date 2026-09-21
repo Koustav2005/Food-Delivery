@@ -72,6 +72,21 @@ export const IconCheck = (props) => (
   </svg>
 )
 
+export const IconMapPin = (props) => (
+  <svg {...base} {...props}>
+    <path d="M12 21s7-6.6 7-12a7 7 0 1 0-14 0c0 5.4 7 12 7 12z" />
+    <circle cx="12" cy="9" r="2.5" />
+  </svg>
+)
+
+export const IconFileText = (props) => (
+  <svg {...base} {...props}>
+    <path d="M7 3.5h7l4 4V20a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1z" />
+    <path d="M14 3.5V8h4" />
+    <path d="M9 12.5h6M9 16h6" />
+  </svg>
+)
+
 export const IconChevron = (props) => (
   <svg {...base} {...props}>
     <path d="M9 18l6-6-6-6" />
