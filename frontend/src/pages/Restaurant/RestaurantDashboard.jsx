@@ -338,7 +338,16 @@ function OrdersTab({ restaurant }) {
       .from('orders')
       .update({ status: next, ...(rejection_reason && { rejection_reason }) })
       .eq('id', order.id)
-    if (error) window.alert(error.message)
+    if (error) {
+      window.alert(error.message)
+      return
+    }
+    if (next === 'READY') {
+      // Kicks off the auto driver-assignment engine on the backend. Fire
+      // and forget — if the backend is down the order just waits at READY
+      // until a restart, it doesn't block the restaurant's own flow.
+      fetch(`${import.meta.env.VITE_BACKEND_URL}/orders/${order.id}/ready`, { method: 'POST' }).catch(() => {})
+    }
   }
 
   if (loading) return <p className="rd-empty">Loading orders…</p>

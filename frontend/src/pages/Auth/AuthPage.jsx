@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../utils/supabase'
 import { ROLES, VEHICLE_TYPES } from './roles'
+import { writeCustomerRow, writeRestaurantRow, writeDriverRow, attachRoleRow } from './roleAttachment'
 import {
   IconMail,
   IconLock,
@@ -20,41 +21,6 @@ import './AuthPage.css'
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const PHONE_RE = /^[6-9]\d{9}$/
 const PENDING_OAUTH_ROLE_KEY = 'tiffin-pending-oauth-role'
-
-function oauthName(user) {
-  return user.user_metadata?.full_name || user.user_metadata?.name || ''
-}
-
-function writeCustomerRow(user) {
-  return supabase.from('customers').upsert({
-    id: user.id,
-    full_name: oauthName(user),
-    email: user.email,
-    phone: user.phone || null,
-  })
-}
-
-async function writeRestaurantRow(user, restaurantName) {
-  await supabase.from('customers').delete().eq('id', user.id)
-  return supabase.from('restaurant_partners').upsert({
-    id: user.id,
-    full_name: oauthName(user),
-    email: user.email,
-    phone: user.phone || null,
-    restaurant_name: restaurantName,
-  })
-}
-
-async function writeDriverRow(user, vehicleType) {
-  await supabase.from('customers').delete().eq('id', user.id)
-  return supabase.from('drivers').upsert({
-    id: user.id,
-    full_name: oauthName(user),
-    email: user.email,
-    phone: user.phone || null,
-    vehicle_type: vehicleType,
-  })
-}
 
 const EMPTY_FORM = {
   fullName: '',
@@ -89,6 +55,7 @@ export default function AuthPage() {
   const [showConfirm, setShowConfirm] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [success, setSuccess] = useState(false)
+  const [attachedExistingAccount, setAttachedExistingAccount] = useState(false)
   const [authError, setAuthError] = useState('')
   const [oauthPending, setOauthPending] = useState(null)
   const [oauthDetail, setOauthDetail] = useState('')
@@ -227,6 +194,29 @@ export default function AuthPage() {
       setSuccess(true)
       return
     }
+
+    // Supabase ties one email to exactly one auth identity, so "signing up"
+    // with an email/password that already belongs to this same person (they
+    // know the password) isn't a new account — it's them adding another
+    // role to their existing one. Try that first; only create a brand new
+    // account if this email/password combo doesn't already exist.
+    const { data: existingSignIn } = await supabase.auth.signInWithPassword({
+      email: form.email,
+      password: form.password,
+    })
+
+    if (existingSignIn?.user) {
+      const { error: attachError } = await attachRoleRow(existingSignIn.user, roleId, form)
+      setSubmitting(false)
+      if (attachError) {
+        setAuthError(attachError.message)
+        return
+      }
+      setAttachedExistingAccount(true)
+      setSuccess(true)
+      return
+    }
+    setAttachedExistingAccount(false)
 
     const { error } = await supabase.auth.signUp({
       email: form.email,
@@ -448,7 +438,9 @@ export default function AuthPage() {
               <p>
                 {mode === 'login'
                   ? `You're logged in as a ${role.label.toLowerCase()}.`
-                  : "We've sent a verification link to your email — confirm it to activate your account."}
+                  : attachedExistingAccount
+                    ? `${role.label} access has been added to your existing account — you're logged in.`
+                    : "We've sent a verification link to your email — confirm it to activate your account."}
               </p>
               <button
                 type="button"
